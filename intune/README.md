@@ -14,7 +14,8 @@ In high-security tenants, standard PowerShell-based enrollment methods often fai
 This script automates the transition to a modern authentication stack by:
 1. **Downloading and installing PowerShell 7 (Core)** on the fly — supports both x64 and ARM64 devices.
 2. **Verifying integrity:** Downloads the official `.sha256` checksum file published by the PowerShell team alongside every release and hard-fails if the hashes don't match.
-3. **Handing off** the enrollment process to PowerShell 7, which natively supports modern web authentication (including FIDO2/YubiKeys).
+3. **Installing WebView2 Runtime** automatically if not present — verified against Microsoft's Authenticode signature before installation.
+4. **Handing off** the enrollment process to PowerShell 7, which natively supports modern web authentication (including FIDO2/YubiKeys).
 
 ## System Requirements
 
@@ -51,7 +52,6 @@ A transcript log is written to `C:\Windows\Temp\IntuneBootstrap-<timestamp>.log`
 | "must be run as Administrator" | Shell not elevated | Ensure you opened CMD via `Shift+F10` during OOBE, or right-click → Run as administrator |
 | "Could not locate SHA256 checksum asset" | GitHub API rate limit or transient error | Wait 60 seconds and retry |
 | "pwsh.exe not found" after install | Disk full or prior failed install left registry state | Check `C:\Windows\Temp\IntuneBootstrap-*.log` for the msiexec error |
-| Browser window doesn't open for auth | WebView2 Runtime missing on thin/custom image | Install WebView2 Runtime manually before running the script |
 | `Invoke-WebRequest` timeout | Slow or metered OOBE network | Connect to a faster network and retry |
 
 ## Under the Hood

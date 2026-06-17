@@ -107,7 +107,42 @@ if (-not (Test-Path $PwshPath)) {
     }
 }
 
-# --- 4. Prepare the Autopilot Payload ---
+# --- 4. Check/Install WebView2 Runtime ---
+# Required for PS7's modern authentication browser window (FIDO2/YubiKey/WHfB)
+$WebView2RegPaths = @(
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+    'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+    'HKCU:\Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+)
+
+if ($WebView2RegPaths | Where-Object { Test-Path $_ }) {
+    Write-Host "[-] WebView2 Runtime already installed." -ForegroundColor Green
+} else {
+    Write-Host "[-] WebView2 Runtime not found. Installing..." -ForegroundColor Cyan
+    $WebView2Installer = "$env:TEMP\MicrosoftEdgeWebView2Setup.exe"
+    try {
+        Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $WebView2Installer -TimeoutSec 60
+
+        # Verify Authenticode signature — more robust than a hardcoded hash since
+        # the bootstrapper updates frequently but is always signed by Microsoft.
+        $Sig = Get-AuthenticodeSignature -FilePath $WebView2Installer
+        if ($Sig.Status -ne 'Valid') {
+            throw "WebView2 installer signature invalid (Status: $($Sig.Status)). Aborting."
+        }
+        if ($Sig.SignerCertificate.Subject -notmatch 'Microsoft') {
+            throw "WebView2 installer is not signed by Microsoft. Aborting."
+        }
+        Write-Host "    [OK] Signature verified: $($Sig.SignerCertificate.Subject)" -ForegroundColor DarkGray
+
+        Start-Process -FilePath $WebView2Installer -ArgumentList '/silent /install' -Wait
+        Write-Host "    [OK] WebView2 Runtime installed." -ForegroundColor Green
+    }
+    finally {
+        if (Test-Path $WebView2Installer) { Remove-Item -Path $WebView2Installer -ErrorAction SilentlyContinue }
+    }
+}
+
+# --- 5. Prepare the Autopilot Payload ---
 $PayloadFile = "$env:TEMP\IntuneEnrollment.ps1"
 
 # Single-quoted here-string prevents variable expansion in the payload.
@@ -147,11 +182,11 @@ else {
 
 Set-Content -Path $PayloadFile -Value $PayloadContent
 
-# --- 5. Handoff to PowerShell 7 ---
+# --- 6. Handoff to PowerShell 7 ---
 Write-Host "[-] Launching Modern Auth Flow..." -ForegroundColor Cyan
 & $PwshPath -ExecutionPolicy Bypass -File $PayloadFile
 
-# --- 6. Cleanup ---
+# --- 7. Cleanup ---
 if (Test-Path $PayloadFile) {
     Remove-Item -Path $PayloadFile -ErrorAction SilentlyContinue
 }
