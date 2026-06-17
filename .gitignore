@@ -1,0 +1,13 @@
+# Logs
+*.log
+
+# Windows artifacts
+Thumbs.db
+desktop.ini
+
+# Editor directories
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
