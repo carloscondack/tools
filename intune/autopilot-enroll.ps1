@@ -13,11 +13,11 @@
     Writes a transcript to C:\Windows\Temp\IntuneBootstrap-<timestamp>.log.
 
 .NOTES
-    Version : 1.1.2
+    Version : 1.1.3
     Ref     : https://learn.microsoft.com/en-us/autopilot/add-devices
 #>
 
-$ScriptVersion = '1.1.2'
+$ScriptVersion = '1.1.3'
 $ErrorActionPreference = "Stop"
 
 # --- 0. Verify Administrator Privileges ---
@@ -63,15 +63,17 @@ if (-not (Test-Path $PwshPath)) {
         }
         if ($HashAsset) {
             Write-Host "    Fetching SHA256 checksum from '$($HashAsset.name)'..." -ForegroundColor DarkGray
-            # Use WebRequest to get the raw byte content, avoiding IRM auto-parse quirks
-            $HashFileContent = (Invoke-WebRequest -Uri $HashAsset.browser_download_url -TimeoutSec 30 -UseBasicParsing).Content
+            # Read raw bytes so we can handle the UTF-16 LE BOM the PowerShell team uses
+            $RawBytes = (Invoke-WebRequest -Uri $HashAsset.browser_download_url -TimeoutSec 30 -UseBasicParsing).RawContentStream.ToArray()
+            if ($RawBytes.Length -ge 2 -and $RawBytes[0] -eq 0xFF -and $RawBytes[1] -eq 0xFE) {
+                $HashFileContent = [System.Text.Encoding]::Unicode.GetString($RawBytes)
+            } else {
+                $HashFileContent = [System.Text.Encoding]::UTF8.GetString($RawBytes)
+            }
             # Split on \r\n or \n; match the MSI filename anywhere on the line (case-insensitive)
             $MsiNamePattern = [regex]::Escape($MsiAsset.name)
             $MatchingLine = ($HashFileContent -split '\r?\n') | Where-Object { $_ -imatch $MsiNamePattern } | Select-Object -First 1
             if (-not $MatchingLine) {
-                # Dump first few lines to help diagnose format issues
-                $Preview = ($HashFileContent -split '\r?\n') | Select-Object -First 5 | ForEach-Object { "      $_" }
-                Write-Host "    [DEBUG] First lines of $($HashAsset.name):`n$($Preview -join "`n")" -ForegroundColor DarkGray
                 throw "SHA256 checksum for '$($MsiAsset.name)' not found inside '$($HashAsset.name)'. Aborting."
             }
             $ExpectedHash = ($MatchingLine.Trim() -split '\s+')[0].Trim().ToUpper()
