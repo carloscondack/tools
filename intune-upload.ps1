@@ -1,79 +1,118 @@
 <#
 .SYNOPSIS
-    Bootstrap script for Intune Autopilot Enrollment via PowerShell 7.
-    Fetches the latest PowerShell 7 release, verifies integrity, and performs
-    Intune enrollment using modern authentication (Phishing Resistant).
+    Bootstrap script for Intune Autopilot enrollment via PowerShell 7.
+
+.DESCRIPTION
+    Designed to run on Windows PowerShell 5.1 during OOBE. Installs PowerShell 7 if
+    absent — downloading the latest MSI from GitHub and verifying its SHA256 integrity
+    against the official checksum file published by the PowerShell team — then delegates
+    Autopilot enrollment to PS7 so that phishing-resistant MFA (FIDO2 / YubiKey /
+    Windows Hello for Business) works correctly.
+
+    Requires administrator rights.
+    Writes a transcript to C:\Windows\Temp\IntuneBootstrap-<timestamp>.log.
+
+.NOTES
+    Version : 1.1.0
+    Ref     : https://learn.microsoft.com/en-us/autopilot/add-devices
 #>
 
+$ScriptVersion = '1.1.0'
 $ErrorActionPreference = "Stop"
 
-Write-Host "[-] Initializing Intune Enrollment Bootstrap..." -ForegroundColor Cyan
+# --- 0. Verify Administrator Privileges ---
+$principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Error "This script must be run as Administrator. Re-launch from an elevated prompt."
+    exit 1
+}
 
-# --- 1. TLS Setup ---
-# Required for GitHub API and PSGallery connectivity
+# --- 1. Logging ---
+$LogFile = "C:\Windows\Temp\IntuneBootstrap-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+Start-Transcript -Path $LogFile -Append
+Write-Host "[-] Transcript: $LogFile" -ForegroundColor DarkGray
+
+Write-Host "[-] Intune Enrollment Bootstrap v$ScriptVersion" -ForegroundColor Cyan
+
+# --- 2. TLS Setup ---
+# Required for GitHub API and PSGallery connectivity on PS 5.1
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-# --- 2. Check/Install PowerShell 7 ---
+# --- 3. Check/Install PowerShell 7 ---
 $PwshPath = "C:\Program Files\PowerShell\7\pwsh.exe"
 
 if (-not (Test-Path $PwshPath)) {
     Write-Host "[-] PowerShell 7 not found. Fetching latest MSI..." -ForegroundColor Cyan
-    
+
+    $TempMsi = $null
     try {
         # Fetch Release Info from GitHub API
-        $LatestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/PowerShell/PowerShell/releases/latest"
-        
-        # 1. Find the MSI Asset
-        $MsiAsset = $LatestRelease.assets | Where-Object { $_.name -like "*-win-x64.msi" } | Select-Object -First 1
-        if (-not $MsiAsset) { throw "Could not find MSI asset in latest release." }
+        $LatestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/PowerShell/PowerShell/releases/latest" -TimeoutSec 30
 
-        # 2. Extract Hash from API Metadata
-        # Checks the 'digest' field provided by GitHub (e.g., "sha256:abcd...")
-        if ($MsiAsset.digest) {
-            $ExpectedHash = $MsiAsset.digest.Split(':')[-1]
-            Write-Host "    Found Integrity Hash." -ForegroundColor DarkGray
+        # 1. Detect architecture and find the matching MSI asset
+        $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+        $MsiAsset = $LatestRelease.assets | Where-Object { $_.name -like "*-win-$Arch.msi" } | Select-Object -First 1
+        if (-not $MsiAsset) { throw "Could not find $Arch MSI asset in latest release." }
+
+        # 2. Fetch the official SHA256 checksum file published alongside the MSI.
+        #    The PowerShell team ships a "<assetname>.sha256" file with every release.
+        $HashAsset = $LatestRelease.assets | Where-Object { $_.name -eq "$($MsiAsset.name).sha256" } | Select-Object -First 1
+        if ($HashAsset) {
+            Write-Host "    Fetching SHA256 checksum..." -ForegroundColor DarkGray
+            $HashFileContent = Invoke-RestMethod -Uri $HashAsset.browser_download_url -TimeoutSec 30
+            # Checksum files are formatted as "<hash>  <filename>"
+            $ExpectedHash = ($HashFileContent -split '\s+')[0].Trim().ToUpper()
+            Write-Host "    Expected: $ExpectedHash" -ForegroundColor DarkGray
         }
         else {
-            Write-Warning "API did not return a SHA256 digest. Skipping security check."
-            $ExpectedHash = $null
+            throw "Could not locate the SHA256 checksum asset for $($MsiAsset.name). Aborting."
         }
 
         # 3. Download the MSI
         $TempMsi = "$env:TEMP\$($MsiAsset.name)"
         Write-Host "[-] Downloading $($MsiAsset.name)..." -ForegroundColor Cyan
-        Invoke-WebRequest -Uri $MsiAsset.browser_download_url -OutFile $TempMsi
+        Invoke-WebRequest -Uri $MsiAsset.browser_download_url -OutFile $TempMsi -TimeoutSec 120
 
         # 4. Verify Integrity
-        if ($ExpectedHash) {
-            Write-Host "[-] Verifying SHA256 Checksum..." -ForegroundColor Cyan
-            $CalculatedHash = (Get-FileHash -Path $TempMsi -Algorithm SHA256).Hash
+        Write-Host "[-] Verifying SHA256 Checksum..." -ForegroundColor Cyan
+        $CalculatedHash = (Get-FileHash -Path $TempMsi -Algorithm SHA256).Hash
 
-            if ($CalculatedHash -ne $ExpectedHash) {
-                Write-Error "HASH MISMATCH!"
-                Write-Error "Expected: $ExpectedHash"
-                Write-Error "Actual:   $CalculatedHash"
-                throw "Security verification failed. The file may be corrupted."
-            }
-            Write-Host "    [OK] Hash Verified." -ForegroundColor Green
+        if ($CalculatedHash -ne $ExpectedHash) {
+            Write-Error "HASH MISMATCH!"
+            Write-Error "Expected: $ExpectedHash"
+            Write-Error "Actual:   $CalculatedHash"
+            throw "Security verification failed. The file may be corrupted or tampered with."
         }
+        Write-Host "    [OK] Hash Verified." -ForegroundColor Green
 
         # 5. Install Silently
         Write-Host "[-] Installing PowerShell 7..." -ForegroundColor Cyan
         Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$TempMsi`" /quiet /norestart" -Wait
+
+        # 6. Verify the binary exists — msiexec /quiet can exit 0 on soft failures
+        if (-not (Test-Path $PwshPath)) {
+            throw "msiexec completed but pwsh.exe not found at '$PwshPath'. Check logs for msiexec failure."
+        }
+        Write-Host "    [OK] PowerShell 7 installed successfully." -ForegroundColor Green
     }
     catch {
-        Write-Error "Critical Failure installing PowerShell 7: $_"
+        Write-Error "Critical failure installing PowerShell 7: $_"
         exit 1
+    }
+    finally {
+        # Always remove the downloaded MSI regardless of success or failure
+        if ($TempMsi -and (Test-Path $TempMsi)) {
+            Remove-Item -Path $TempMsi -ErrorAction SilentlyContinue
+        }
     }
 }
 
-# --- 3. Prepare the Autopilot Payload ---
+# --- 4. Prepare the Autopilot Payload ---
 $PayloadFile = "$env:TEMP\IntuneEnrollment.ps1"
 
-# We use Single Quotes (@') to prevent variable expansion errors.
+# Single-quoted here-string prevents variable expansion in the payload.
 $PayloadContent = @'
-Write-Host "[-] Configuring PowerShell 7 Environment..." -ForegroundColor Green
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Write-Host "[-] Configuring environment..." -ForegroundColor Green
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned -Force
 
 # 1. Install NuGet Provider (Required for Install-Script)
@@ -98,7 +137,7 @@ if ($ScriptInfo) {
 
     Write-Host "[-] Starting Authentication (Phishing Resistant)..." -ForegroundColor Yellow
     Write-Host "    A browser window will open shortly." -ForegroundColor Gray
-    
+
     & $ScriptPath -Online
 }
 else {
@@ -108,16 +147,14 @@ else {
 
 Set-Content -Path $PayloadFile -Value $PayloadContent
 
-# --- 4. Handoff to PowerShell 7 ---
+# --- 5. Handoff to PowerShell 7 ---
 Write-Host "[-] Launching Modern Auth Flow..." -ForegroundColor Cyan
+& $PwshPath -ExecutionPolicy Bypass -File $PayloadFile
 
-# Run the payload inside the new PS7 environment
-& "C:\Program Files\PowerShell\7\pwsh.exe" -ExecutionPolicy Bypass -File $PayloadFile
-
-# --- 5. Cleanup ---
-# Delete the temporary payload script to keep the system clean
+# --- 6. Cleanup ---
 if (Test-Path $PayloadFile) {
     Remove-Item -Path $PayloadFile -ErrorAction SilentlyContinue
 }
 
 Write-Host "[-] Process Complete." -ForegroundColor Cyan
+Stop-Transcript
