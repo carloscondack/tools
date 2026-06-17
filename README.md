@@ -33,7 +33,7 @@ Perform these steps on a fresh Windows device during the initial setup screen.
 4. Run the following one-liner:
 
 ```cmd
-powershell -ep bypass -c "irm https://tools.ccittech.solutions/autopilot-enroll.ps1|iex"
+powershell -ep bypass -c "irm https://tools.ccittech.solutions/intune/autopilot-enroll.ps1|iex"
 ```
 
 A transcript log is written to `C:\Windows\Temp\IntuneBootstrap-<timestamp>.log` for troubleshooting.
