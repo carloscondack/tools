@@ -13,11 +13,11 @@
     Writes a transcript to C:\Windows\Temp\IntuneBootstrap-<timestamp>.log.
 
 .NOTES
-    Version : 1.2.0
+    Version : 1.2.1
     Ref     : https://learn.microsoft.com/en-us/autopilot/add-devices
 #>
 
-$ScriptVersion = '1.2.0'
+$ScriptVersion = '1.2.1'
 $ErrorActionPreference = "Stop"
 
 # --- 0. Header ---
@@ -186,19 +186,26 @@ Write-Host "  [>] Configuring enrollment environment..." -ForegroundColor Cyan
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned -Force
 
 # 1. Install NuGet Provider (Required for Install-Script)
-if (-not (Get-PackageProvider -ListAvailable -Name NuGet)) {
+if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) {
     Write-Host "  [>] Installing NuGet Provider..." -ForegroundColor Cyan
     Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
 }
 
-# 2. Install or Locate Autopilot Script
+# 2. Ensure PSGallery is registered and trusted
+if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+    Write-Host "  [>] Registering PSGallery..." -ForegroundColor Cyan
+    Register-PSRepository -Default -ErrorAction SilentlyContinue
+}
+Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+# 3. Install or Locate Autopilot Script
 $ScriptName = "Get-WindowsAutopilotInfo"
 $ScriptInfo = Get-InstalledScript -Name $ScriptName -ErrorAction SilentlyContinue
 
 if (-not $ScriptInfo) {
-    Write-Host "  [>] Installing Get-WindowsAutopilotInfo..." -ForegroundColor Cyan
-    Install-Script -Name $ScriptName -Force -Scope CurrentUser | Out-Null
-    $ScriptInfo = Get-InstalledScript -Name $ScriptName
+    Write-Host "  [>] Installing Get-WindowsAutopilotInfo from PSGallery..." -ForegroundColor Cyan
+    Install-Script -Name $ScriptName -Force -Scope CurrentUser -Repository PSGallery | Out-Null
+    $ScriptInfo = Get-InstalledScript -Name $ScriptName -ErrorAction SilentlyContinue
 }
 
 # 3. Execute using the Full Path (Fixes PATH visibility issues)
